@@ -111,6 +111,84 @@ pnpm lint
 ./frontend/scripts/e2e.sh
 ```
 
+## Container image
+
+`Dockerfile` builds the frontend, embeds it into a static Go binary, and runs it
+on a distroless base image listening on `:8080`.
+
+```sh
+docker build -t semgate-example .
+docker run --rm -p 8080:8080 semgate-example
+```
+
+## Deploying to Cloud Run
+
+`scripts/deploy.sh` builds the image from `Dockerfile` with Cloud Build
+(`gcloud run deploy --source`) and deploys it as a Cloud Run service with:
+
+- scale to zero with at most one instance for the whole service (`--min 0`,
+  `--max 1`)
+- the smallest resources Cloud Run accepts: `--cpu 0.08`, `--memory 128Mi`.
+  A CPU below 1 requires `--concurrency 1`, request-based billing
+  (`--cpu-throttling`), and the first-generation execution environment
+  (`--execution-environment gen1`), so the script sets all three
+- no unauthenticated access (`--no-allow-unauthenticated`). The `run.app` URL
+  is still reachable from the internet (ingress `all`), but Cloud Run rejects
+  every request that lacks an identity token of a principal holding
+  `roles/run.invoker`
+
+| Env | Required | Default | Meaning |
+|---|---|---|---|
+| `SEMGATE_EXAMPLE_PROJECT` | yes | — | Google Cloud project ID to deploy into |
+| `SEMGATE_EXAMPLE_REGION` | no | `asia-northeast1` | Cloud Run region |
+| `SEMGATE_EXAMPLE_SERVICE` | no | `semgate-example` | Cloud Run service name |
+
+```sh
+SEMGATE_EXAMPLE_PROJECT=my-project ./scripts/deploy.sh
+```
+
+The image is pushed to the Artifact Registry repository
+`cloud-run-source-deploy` in the same region, which Cloud Run creates on the
+first deploy.
+
+### One-time project setup
+
+Run these once per project before the first deploy
+(see https://docs.cloud.google.com/run/docs/deploying-source-code for details):
+
+```sh
+PROJECT=my-project
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com --project "$PROJECT"
+
+# Cloud Build runs as the Compute Engine default service account.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role roles/run.builder
+```
+
+The account running `scripts/deploy.sh` needs `roles/run.sourceDeveloper` and
+`roles/serviceusage.serviceUsageConsumer` on the project, and
+`roles/iam.serviceAccountUser` on the Cloud Run service identity (the Compute
+Engine default service account unless configured otherwise). It also needs
+`run.services.setIamPolicy` (included in `roles/run.admin`), because
+`--no-allow-unauthenticated` removes any `allUsers` binding from the service
+IAM policy. Without that permission gcloud only prints a warning and finishes
+the deploy, leaving an existing `allUsers` binding in place.
+
+### Accessing the deployed service
+
+Because unauthenticated access is disabled, open the service through an
+authenticated local proxy (requires `roles/run.invoker` on the service):
+
+```sh
+gcloud run services proxy semgate-example \
+  --project my-project --region asia-northeast1 --port 8080
+# then browse http://localhost:8080
+```
+
 ## Inserting the guard
 
 The `/api` subrouter in `pkg/controller/http/server.go` is the single seam: a
