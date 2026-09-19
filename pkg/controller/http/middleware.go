@@ -14,9 +14,9 @@ import (
 const maxInputBytes = 1024
 
 // boundInputs enforces the 1KB limit on the body, every query value, and the
-// X-Log-Tag header. It is registered first on the /api subrouter so it runs
-// before any guard middleware inserted at that seam — the guard then only ever
-// sees bounded input.
+// X-Log-Tag header. It is registered on the /api subrouter before any guard
+// middleware inserted at that seam — the guard then only ever sees bounded
+// input.
 func boundInputs(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxInputBytes)

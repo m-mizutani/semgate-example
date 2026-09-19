@@ -47,6 +47,25 @@ Requests are always answered with `200` (the verdict is the `exploited` flag), s
 that a later guard's `403` is a clear before/after difference. Oversized input
 returns `413`; malformed input or a missing parameter returns `400`.
 
+### Rate limit
+
+Each client IP may send at most 15 `/api` requests per minute (configurable with
+`--rate-limit`). Requests beyond that return `429` with a `Retry-After` header
+(seconds until the current minute ends) and never reach the handler.
+
+- Counting uses fixed one-minute windows aligned to the clock; every count
+  resets when the next minute starts.
+- The client IP is the TCP peer address. `X-Forwarded-For` is ignored, so behind
+  a reverse proxy all clients share the proxy's IP.
+- Counts are held in process memory: they reset on restart, and multiple
+  instances each enforce their own limit.
+- SPA static files are not counted.
+- The number of IP entries kept for the current minute is not capped, so memory
+  grows with the number of distinct client IPs seen within that minute. A client
+  that can send from many source addresses (for example many addresses in one
+  IPv6 /64) can grow that map without being rate limited. This is accepted for a
+  range that is not meant to be deployed on a public network.
+
 ### How the verdict is decided
 
 Detection is not substring matching — each input is evaluated inside a model of
@@ -82,6 +101,7 @@ Flags (with matching environment variables):
 | `--addr` | `:8080` | `SEMGATE_EXAMPLE_ADDR` |
 | `--log-format` | `json` | `SEMGATE_EXAMPLE_LOG_FORMAT` (`json` \| `console`) |
 | `--log-level` | `info` | `SEMGATE_EXAMPLE_LOG_LEVEL` (`debug`\|`info`\|`warn`\|`error`) |
+| `--rate-limit` | `15` | `SEMGATE_EXAMPLE_RATE_LIMIT` (`/api` requests per client IP per minute; `0` disables) |
 
 The frontend is embedded in the binary, so the single process serves both the API
 and the SPA.
