@@ -11,8 +11,7 @@ those same requests should be blocked before reaching the handlers.
 > endpoint parses/evaluates the input inside a model of the vulnerable sink to
 > decide whether an attack *would* fire, and, when it fires, returns synthetic
 > (fabricated) data. All shown data is fake — no real credentials, secrets,
-> hosts, or files. Do not deploy on a public network; for authorized security
-> testing only.
+> hosts, or files. For security testing only.
 
 ## Endpoints
 
@@ -132,10 +131,8 @@ docker run --rm -p 8080:8080 semgate-example
   A CPU below 1 requires `--concurrency 1`, request-based billing
   (`--cpu-throttling`), and the first-generation execution environment
   (`--execution-environment gen1`), so the script sets all three
-- no unauthenticated access (`--no-allow-unauthenticated`). The `run.app` URL
-  is still reachable from the internet (ingress `all`), but Cloud Run rejects
-  every request that lacks an identity token of a principal holding
-  `roles/run.invoker`
+- public access: anyone on the internet can reach the `run.app` URL without
+  authentication (`--allow-unauthenticated`)
 
 | Env | Required | Default | Meaning |
 |---|---|---|---|
@@ -174,20 +171,13 @@ The account running `scripts/deploy.sh` needs `roles/run.sourceDeveloper` and
 `roles/iam.serviceAccountUser` on the Cloud Run service identity (the Compute
 Engine default service account unless configured otherwise). It also needs
 `run.services.setIamPolicy` (included in `roles/run.admin`), because
-`--no-allow-unauthenticated` removes any `allUsers` binding from the service
-IAM policy. Without that permission gcloud only prints a warning and finishes
-the deploy, leaving an existing `allUsers` binding in place.
+`--allow-unauthenticated` adds an `allUsers` binding for `roles/run.invoker` to
+the service IAM policy. If that update fails (missing permission, or an
+organization policy that forbids `allUsers`), gcloud only prints a warning and
+finishes the deploy, and the service rejects unauthenticated requests with
+`403`.
 
-### Accessing the deployed service
-
-Because unauthenticated access is disabled, open the service through an
-authenticated local proxy (requires `roles/run.invoker` on the service):
-
-```sh
-gcloud run services proxy semgate-example \
-  --project my-project --region asia-northeast1 --port 8080
-# then browse http://localhost:8080
-```
+The deploy prints the public `Service URL` (`https://...run.app`).
 
 ## Inserting the guard
 

@@ -14,8 +14,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # gen1 is also required for memory below 512Mi.
 # --min/--max cap the whole service; --max-instances would cap each revision,
 # so old and new revisions could run at once during a rollout.
-# --no-allow-unauthenticated requires an IAM identity token on every request;
-# reach the service through `gcloud run services proxy` (see README).
+# --allow-unauthenticated exposes the range publicly as a test target.
 gcloud run deploy "$SERVICE" \
   --project "$PROJECT" \
   --region "$REGION" \
@@ -29,5 +28,5 @@ gcloud run deploy "$SERVICE" \
   --no-cpu-boost \
   --min 0 \
   --max 1 \
-  --no-allow-unauthenticated \
+  --allow-unauthenticated \
   --quiet
