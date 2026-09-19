@@ -60,6 +60,11 @@ Each client IP may send at most 15 `/api` requests per minute (configurable with
 - Counts are held in process memory: they reset on restart, and multiple
   instances each enforce their own limit.
 - SPA static files are not counted.
+- The number of IP entries kept for the current minute is not capped, so memory
+  grows with the number of distinct client IPs seen within that minute. A client
+  that can send from many source addresses (for example many addresses in one
+  IPv6 /64) can grow that map without being rate limited. This is accepted for a
+  range that is not meant to be deployed on a public network.
 
 ### How the verdict is decided
 
