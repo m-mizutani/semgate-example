@@ -24,10 +24,11 @@ profile.cov
 go.work
 go.work.sum
 
-# env file (zenv loads .env and .env.yaml from the working directory)
+# env file (zenv loads .env, .env.yaml and .env.hcl from the working directory)
 .env
 .env.yaml
 .env.yml
+.env.hcl
 
 # Terraform working directory and state (state lives in GCS)
 .terraform/
