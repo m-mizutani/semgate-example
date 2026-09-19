@@ -30,3 +30,19 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Node / frontend
+node_modules/
+.pnpm-store/
+
+# Frontend build output (dist is produced by `pnpm build`; embedded by Go)
+frontend/dist/*
+!frontend/dist/.gitkeep
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Playwright artifacts
+frontend/test-results/
+frontend/playwright-report/
+frontend/playwright/.cache/
