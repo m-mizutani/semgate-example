@@ -1,0 +1,118 @@
+version: "3"
+
+# Environment variables (loaded by zenv from .env.yaml), matching the
+# SEMGATE_EXAMPLE_ prefix the server itself uses:
+#   SEMGATE_EXAMPLE_PROJECT       Google Cloud project ID to deploy into (required)
+#   SEMGATE_EXAMPLE_STATE_BUCKET  GCS bucket holding the Terraform state (required)
+#   SEMGATE_EXAMPLE_REGION        Cloud Run region (optional, default asia-northeast1)
+#   SEMGATE_EXAMPLE_SERVICE       Cloud Run service name (optional, default semgate-example)
+
+tasks:
+  deploy:
+    desc: Build the image with Cloud Build and apply the Terraform configuration
+    cmds:
+      - zenv task deploy:run
+
+  plan:
+    desc: Show the Terraform plan for the image currently deployed
+    cmds:
+      - zenv task plan:run
+
+  destroy:
+    desc: Destroy the Cloud Run service
+    cmds:
+      - zenv task destroy:run
+
+  # The :run tasks are invoked through zenv by the tasks above, so they cannot
+  # be marked internal.
+  deploy:run:
+    deps: [check-env]
+    cmds:
+      - task: bootstrap
+      - |
+        set -eu
+        region="${SEMGATE_EXAMPLE_REGION:-asia-northeast1}"
+        service="${SEMGATE_EXAMPLE_SERVICE:-semgate-example}"
+        image="${region}-docker.pkg.dev/${SEMGATE_EXAMPLE_PROJECT}/${service}/${service}:$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+        gcloud builds submit . --project "$SEMGATE_EXAMPLE_PROJECT" --tag "$image"
+        terraform -chdir=terraform apply \
+          -var "project=$SEMGATE_EXAMPLE_PROJECT" \
+          -var "region=$region" \
+          -var "service_name=$service" \
+          -var "image=$image"
+
+  plan:run:
+    deps: [check-env]
+    cmds:
+      - task: init
+      - |
+        set -eu
+        region="${SEMGATE_EXAMPLE_REGION:-asia-northeast1}"
+        service="${SEMGATE_EXAMPLE_SERVICE:-semgate-example}"
+        image="$(terraform -chdir=terraform output -raw image 2>/dev/null || true)"
+        if [ -z "$image" ]; then
+          echo "no image recorded in the state yet; run 'task deploy' first" >&2
+          exit 1
+        fi
+        terraform -chdir=terraform plan \
+          -var "project=$SEMGATE_EXAMPLE_PROJECT" \
+          -var "region=$region" \
+          -var "service_name=$service" \
+          -var "image=$image"
+
+  destroy:run:
+    deps: [check-env]
+    cmds:
+      - task: init
+      - |
+        set -eu
+        region="${SEMGATE_EXAMPLE_REGION:-asia-northeast1}"
+        service="${SEMGATE_EXAMPLE_SERVICE:-semgate-example}"
+        # The image value is irrelevant while destroying, but the variable has
+        # no default, so a placeholder is passed.
+        terraform -chdir=terraform destroy \
+          -var "project=$SEMGATE_EXAMPLE_PROJECT" \
+          -var "region=$region" \
+          -var "service_name=$service" \
+          -var "image=unused"
+
+  check-env:
+    internal: true
+    preconditions:
+      - sh: '[ -n "${SEMGATE_EXAMPLE_PROJECT:-}" ]'
+        msg: "SEMGATE_EXAMPLE_PROJECT is not set (define it in .env.yaml for zenv)"
+      - sh: '[ -n "${SEMGATE_EXAMPLE_STATE_BUCKET:-}" ]'
+        msg: "SEMGATE_EXAMPLE_STATE_BUCKET is not set (define it in .env.yaml for zenv)"
+
+  init:
+    internal: true
+    cmds:
+      - terraform -chdir=terraform init -reconfigure -backend-config="bucket=$SEMGATE_EXAMPLE_STATE_BUCKET"
+
+  # Creates what Terraform cannot create for itself: the bucket holding its own
+  # state, the APIs it calls, and the registry the image is pushed to before
+  # the service exists. Each step is skipped when the resource is already there.
+  bootstrap:
+    internal: true
+    cmds:
+      - gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project "$SEMGATE_EXAMPLE_PROJECT"
+      - |
+        set -eu
+        region="${SEMGATE_EXAMPLE_REGION:-asia-northeast1}"
+        if ! gcloud storage buckets describe "gs://${SEMGATE_EXAMPLE_STATE_BUCKET}" --project "$SEMGATE_EXAMPLE_PROJECT" >/dev/null 2>&1; then
+          gcloud storage buckets create "gs://${SEMGATE_EXAMPLE_STATE_BUCKET}" \
+            --project "$SEMGATE_EXAMPLE_PROJECT" --location "$region" \
+            --uniform-bucket-level-access --public-access-prevention
+          gcloud storage buckets update "gs://${SEMGATE_EXAMPLE_STATE_BUCKET}" --versioning
+        fi
+      - |
+        set -eu
+        region="${SEMGATE_EXAMPLE_REGION:-asia-northeast1}"
+        service="${SEMGATE_EXAMPLE_SERVICE:-semgate-example}"
+        if ! gcloud artifacts repositories describe "$service" \
+          --project "$SEMGATE_EXAMPLE_PROJECT" --location "$region" >/dev/null 2>&1; then
+          gcloud artifacts repositories create "$service" \
+            --project "$SEMGATE_EXAMPLE_PROJECT" --location "$region" \
+            --repository-format docker
+        fi
+      - task: init

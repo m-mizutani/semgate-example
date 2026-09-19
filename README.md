@@ -11,8 +11,7 @@ those same requests should be blocked before reaching the handlers.
 > endpoint parses/evaluates the input inside a model of the vulnerable sink to
 > decide whether an attack *would* fire, and, when it fires, returns synthetic
 > (fabricated) data. All shown data is fake — no real credentials, secrets,
-> hosts, or files. Do not deploy on a public network; for authorized security
-> testing only.
+> hosts, or files. For security testing only.
 
 ## Endpoints
 
@@ -130,6 +129,99 @@ pnpm lint
 # end-to-end (builds frontend + binary, starts server, runs Playwright)
 ./frontend/scripts/e2e.sh
 ```
+
+## Container image
+
+`Dockerfile` builds the frontend, embeds it into a static Go binary, and runs it
+on a distroless base image listening on `:8080`.
+
+```sh
+docker build -t semgate-example .
+docker run --rm -p 8080:8080 semgate-example
+```
+
+## Deploying to Cloud Run
+
+The Cloud Run service is defined in `terraform/` and deployed with
+[Task](https://taskfile.dev) and [zenv](https://github.com/m-mizutani/zenv):
+
+```sh
+task deploy
+```
+
+`task deploy` runs, in order:
+
+1. enable the Run, Cloud Build, and Artifact Registry APIs
+2. create the Terraform state bucket and the Artifact Registry repository if
+   they do not exist yet (Terraform cannot create the bucket holding its own
+   state, so this step is not part of the Terraform configuration)
+3. `terraform init` against the GCS backend
+4. `gcloud builds submit --tag`, which builds `Dockerfile` and pushes the image
+   tagged with the current commit and a timestamp
+5. `terraform apply` with that image, printing the plan for confirmation
+
+`task plan` shows the plan for the image currently recorded in the state, and
+`task destroy` removes the service. The public URL is the `service_url` output.
+
+### Environment variables
+
+zenv reads `.env.yaml` (or `.env`) from the repository root; both are
+gitignored. The names share the `SEMGATE_EXAMPLE_` prefix the server itself
+uses, and `Taskfile.yml` passes them to Terraform as input variables.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `SEMGATE_EXAMPLE_PROJECT` | yes | — | Google Cloud project ID to deploy into |
+| `SEMGATE_EXAMPLE_STATE_BUCKET` | yes | — | GCS bucket holding the Terraform state |
+| `SEMGATE_EXAMPLE_REGION` | no | `asia-northeast1` | Cloud Run region |
+| `SEMGATE_EXAMPLE_SERVICE` | no | `semgate-example` | Cloud Run service name |
+
+```yaml
+# .env.yaml
+SEMGATE_EXAMPLE_PROJECT: my-project
+SEMGATE_EXAMPLE_STATE_BUCKET: my-project-tfstate
+```
+
+The state bucket is created with uniform bucket-level access, public access
+prevention, and object versioning, so a broken state can be rolled back to an
+earlier generation. Sharing the deployment across machines needs nothing but
+`gcloud auth application-default login` on each of them.
+
+### What the Terraform configuration sets
+
+- scale to zero with at most one instance for the whole service (the
+  service-level `scaling` block; the `scaling` block inside `template` would
+  cap each revision, letting a rollout run two at once)
+- the smallest resources Cloud Run accepts: `cpu = "0.08"`, `memory = "128Mi"`.
+  A CPU below 1 requires `max_instance_request_concurrency = 1`, per-request
+  CPU allocation (`cpu_idle = true`), and `EXECUTION_ENVIRONMENT_GEN1`, which
+  is also required for memory below 512Mi
+- public access: `allUsers` is granted `roles/run.invoker`, so anyone on the
+  internet can reach the `run.app` URL without authentication
+
+### One-time project setup
+
+```sh
+PROJECT=my-project
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+
+# Cloud Build runs as the Compute Engine default service account.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role roles/artifactregistry.writer
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role roles/logging.logWriter
+```
+
+The account running `task deploy` needs, on the project: `roles/run.admin`
+(creating the service and granting `allUsers` the invoker role requires
+`run.services.setIamPolicy`), `roles/cloudbuild.builds.editor`,
+`roles/artifactregistry.admin`, `roles/storage.admin` for the state bucket,
+`roles/serviceusage.serviceUsageAdmin` to enable the APIs, and
+`roles/iam.serviceAccountUser` on the Cloud Run service identity and the build
+service account. An organization policy that forbids `allUsers` bindings makes
+`terraform apply` fail at `google_cloud_run_v2_service_iam_member`.
 
 ## Inserting the guard
 
