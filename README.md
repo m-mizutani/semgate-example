@@ -146,19 +146,20 @@ task deploy
 ### Environment variables
 
 zenv reads `.env.yaml` (or `.env`) from the repository root; both are
-gitignored. `TF_VAR_`-prefixed names are read by Terraform as input variables.
+gitignored. The names share the `SEMGATE_EXAMPLE_` prefix the server itself
+uses, and `Taskfile.yml` passes them to Terraform as input variables.
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `TF_VAR_project` | yes | — | Google Cloud project ID to deploy into |
-| `TF_STATE_BUCKET` | yes | — | GCS bucket holding the Terraform state |
-| `TF_VAR_region` | no | `asia-northeast1` | Cloud Run region |
-| `TF_VAR_service_name` | no | `semgate-example` | Cloud Run service name |
+| `SEMGATE_EXAMPLE_PROJECT` | yes | — | Google Cloud project ID to deploy into |
+| `SEMGATE_EXAMPLE_STATE_BUCKET` | yes | — | GCS bucket holding the Terraform state |
+| `SEMGATE_EXAMPLE_REGION` | no | `asia-northeast1` | Cloud Run region |
+| `SEMGATE_EXAMPLE_SERVICE` | no | `semgate-example` | Cloud Run service name |
 
 ```yaml
 # .env.yaml
-TF_VAR_project: my-project
-TF_STATE_BUCKET: my-project-tfstate
+SEMGATE_EXAMPLE_PROJECT: my-project
+SEMGATE_EXAMPLE_STATE_BUCKET: my-project-tfstate
 ```
 
 The state bucket is created with uniform bucket-level access, public access
