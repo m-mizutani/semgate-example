@@ -23,6 +23,15 @@ async function parse(res: Response): Promise<Envelope> {
   if (res.status === 413) {
     throw new RequestError(413, 'Input is too large (the range accepts at most 1KB).')
   }
+  if (res.status === 429) {
+    const retryAfter = res.headers.get('Retry-After')
+    throw new RequestError(
+      429,
+      retryAfter
+        ? `Too many requests. Try again in ${retryAfter} seconds.`
+        : 'Too many requests. Try again later.',
+    )
+  }
   if (res.status === 400) {
     const body = (await res.json().catch(() => ({}))) as { error?: string }
     throw new RequestError(400, body.error ?? 'Bad request.')

@@ -41,6 +41,12 @@ describe('AttackResult', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('413')
   })
 
+  it('shows a rate-limited request as a warning', () => {
+    render(<AttackResult envelope={null} error={new RequestError(429, 'Too many requests')} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('429')
+    expect(screen.getByRole('alert')).toHaveClass('warn')
+  })
+
   it('renders nothing before the first submit', () => {
     const { container } = render(<AttackResult envelope={null} error={null} />)
     expect(container).toBeEmptyDOMElement()

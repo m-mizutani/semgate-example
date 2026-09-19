@@ -9,7 +9,7 @@ interface Props {
 // nothing yet.
 export default function AttackResult({ envelope, error }: Props) {
   if (error) {
-    const cls = error.status === 413 || error.status === 400 ? 'warn' : 'ok'
+    const cls = error.status === 413 || error.status === 400 || error.status === 429 ? 'warn' : 'ok'
     return (
       <div className={`banner ${cls}`} role="alert">
         Request rejected ({error.status})

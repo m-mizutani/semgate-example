@@ -27,7 +27,7 @@ type respEnvelope struct {
 	Result    map[string]any `json:"result"`
 }
 
-func newTestServer(t *testing.T, logBuf io.Writer) http.Handler {
+func newTestServer(t *testing.T, logBuf io.Writer, opts ...httpctrl.Option) http.Handler {
 	t.Helper()
 	sim, err := usecase.NewSimulator()
 	gt.NoError(t, err)
@@ -41,7 +41,7 @@ func newTestServer(t *testing.T, logBuf io.Writer) http.Handler {
 	staticFS := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>Injection Range</title>")},
 	}
-	h, err := httpctrl.New(sim, staticFS, logger)
+	h, err := httpctrl.New(sim, staticFS, logger, opts...)
 	gt.NoError(t, err)
 	return h
 }

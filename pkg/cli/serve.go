@@ -19,6 +19,7 @@ import (
 
 func cmdServe() *cli.Command {
 	var addr, logFormat, logLevel string
+	var rateLimit int
 	return &cli.Command{
 		Name:  "serve",
 		Usage: "Run the injection range HTTP server",
@@ -44,6 +45,13 @@ func cmdServe() *cli.Command {
 				Sources:     cli.EnvVars("SEMGATE_EXAMPLE_LOG_LEVEL"),
 				Destination: &logLevel,
 			},
+			&cli.IntFlag{
+				Name:        "rate-limit",
+				Usage:       "max /api requests per client IP per minute (0 disables the limit)",
+				Value:       15,
+				Sources:     cli.EnvVars("SEMGATE_EXAMPLE_RATE_LIMIT"),
+				Destination: &rateLimit,
+			},
 		},
 		Action: func(ctx context.Context, _ *cli.Command) error {
 			logger := logging.New(os.Stdout, logging.ParseFormat(logFormat), logging.ParseLevel(logLevel))
@@ -59,7 +67,12 @@ func cmdServe() *cli.Command {
 				return goerr.Wrap(err, "bind embedded static files")
 			}
 
-			handler, err := httpctrl.New(sim, staticFS, logger)
+			var opts []httpctrl.Option
+			if rateLimit != 0 {
+				opts = append(opts, httpctrl.WithRateLimit(rateLimit, time.Minute))
+			}
+
+			handler, err := httpctrl.New(sim, staticFS, logger, opts...)
 			if err != nil {
 				return goerr.Wrap(err, "build http handler")
 			}

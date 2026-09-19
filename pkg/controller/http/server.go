@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/semgate-example/pkg/usecase"
 )
 
@@ -19,9 +21,46 @@ type handlers struct {
 	sim *usecase.Simulator
 }
 
-// New builds the HTTP handler: the /api subrouter (the guard seam, where input
-// size bounds and per-request logging are applied) and the embedded SPA.
-func New(sim *usecase.Simulator, staticFS fs.FS, logger *slog.Logger) (http.Handler, error) {
+// Option configures optional behavior of the handler built by New.
+type Option func(*options)
+
+type options struct {
+	rateLimit  int
+	rateWindow time.Duration
+	now        func() time.Time
+}
+
+// WithRateLimit allows each client IP at most limit requests to /api per
+// fixed window. Without this option /api is not rate limited.
+func WithRateLimit(limit int, window time.Duration) Option {
+	return func(o *options) {
+		o.rateLimit = limit
+		o.rateWindow = window
+	}
+}
+
+func withClock(now func() time.Time) Option {
+	return func(o *options) { o.now = now }
+}
+
+// New builds the HTTP handler: the /api subrouter (the guard seam, where the
+// rate limit, input size bounds, and per-request logging are applied) and the
+// embedded SPA.
+func New(sim *usecase.Simulator, staticFS fs.FS, logger *slog.Logger, opts ...Option) (http.Handler, error) {
+	o := options{now: time.Now}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	var limiter *ipRateLimiter
+	if o.rateLimit != 0 || o.rateWindow != 0 {
+		if o.rateLimit <= 0 || o.rateWindow <= 0 {
+			return nil, goerr.New("rate limit and window must be positive",
+				goerr.V("rate_limit", o.rateLimit), goerr.V("rate_window", o.rateWindow))
+		}
+		limiter = newIPRateLimiter(o.rateLimit, o.rateWindow, o.now)
+	}
+
 	h := &handlers{sim: sim}
 
 	r := chi.NewRouter()
@@ -33,8 +72,13 @@ func New(sim *usecase.Simulator, staticFS fs.FS, logger *slog.Logger) (http.Hand
 	// The API subrouter is the single seam a guard middleware would wrap. Every
 	// attack-carrying request passes through here.
 	r.Route("/api", func(api chi.Router) {
-		// Input size is bounded first, so a guard middleware inserted after this
-		// (api.Use(guard)) only ever inspects bounded input.
+		// The rate limit applies only here, so SPA static files are never
+		// counted.
+		if limiter != nil {
+			api.Use(limiter.middleware)
+		}
+		// Input size is bounded before any guard, so a guard middleware inserted
+		// after this (api.Use(guard)) only ever inspects bounded input.
 		api.Use(boundInputs)
 		// A guard middleware (semgate) would be inserted here with api.Use(...).
 		api.Post("/login", h.login)
