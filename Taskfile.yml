@@ -1,0 +1,99 @@
+version: "3"
+
+# Environment variables (loaded by zenv from .env.yaml):
+#   TF_VAR_project    Google Cloud project ID to deploy into (required)
+#   TF_STATE_BUCKET   GCS bucket holding the Terraform state (required)
+#   TF_VAR_region     Cloud Run region (optional, default asia-northeast1)
+#   TF_VAR_service_name  Cloud Run service name (optional, default semgate-example)
+
+tasks:
+  deploy:
+    desc: Build the image with Cloud Build and apply the Terraform configuration
+    cmds:
+      - zenv task deploy:run
+
+  plan:
+    desc: Show the Terraform plan for the image currently deployed
+    cmds:
+      - zenv task plan:run
+
+  destroy:
+    desc: Destroy the Cloud Run service
+    cmds:
+      - zenv task destroy:run
+
+  # The :run tasks are invoked through zenv by the tasks above, so they cannot
+  # be marked internal.
+  deploy:run:
+    deps: [check-env]
+    cmds:
+      - task: bootstrap
+      - |
+        set -eu
+        region="${TF_VAR_region:-asia-northeast1}"
+        service="${TF_VAR_service_name:-semgate-example}"
+        image="${region}-docker.pkg.dev/${TF_VAR_project}/${service}/${service}:$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+        gcloud builds submit . --project "$TF_VAR_project" --tag "$image"
+        terraform -chdir=terraform apply -var "image=$image"
+
+  plan:run:
+    deps: [check-env]
+    cmds:
+      - task: init
+      - |
+        set -eu
+        image="$(terraform -chdir=terraform output -raw image 2>/dev/null || true)"
+        if [ -z "$image" ]; then
+          echo "no image recorded in the state yet; run 'task deploy' first" >&2
+          exit 1
+        fi
+        terraform -chdir=terraform plan -var "image=$image"
+
+  destroy:run:
+    deps: [check-env]
+    cmds:
+      - task: init
+      # The image value is irrelevant while destroying, but the variable has no
+      # default, so a placeholder is passed.
+      - terraform -chdir=terraform destroy -var "image=unused"
+
+  check-env:
+    internal: true
+    preconditions:
+      - sh: '[ -n "${TF_VAR_project:-}" ]'
+        msg: "TF_VAR_project is not set (define it in .env.yaml for zenv)"
+      - sh: '[ -n "${TF_STATE_BUCKET:-}" ]'
+        msg: "TF_STATE_BUCKET is not set (define it in .env.yaml for zenv)"
+
+  init:
+    internal: true
+    cmds:
+      - terraform -chdir=terraform init -reconfigure -backend-config="bucket=$TF_STATE_BUCKET"
+
+  # Creates what Terraform cannot create for itself: the bucket holding its own
+  # state, the APIs it calls, and the registry the image is pushed to before
+  # the service exists. Each step is skipped when the resource is already there.
+  bootstrap:
+    internal: true
+    cmds:
+      - gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project "$TF_VAR_project"
+      - |
+        set -eu
+        region="${TF_VAR_region:-asia-northeast1}"
+        if ! gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project "$TF_VAR_project" >/dev/null 2>&1; then
+          gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
+            --project "$TF_VAR_project" --location "$region" \
+            --uniform-bucket-level-access --public-access-prevention
+          gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning
+        fi
+      - |
+        set -eu
+        region="${TF_VAR_region:-asia-northeast1}"
+        service="${TF_VAR_service_name:-semgate-example}"
+        if ! gcloud artifacts repositories describe "$service" \
+          --project "$TF_VAR_project" --location "$region" >/dev/null 2>&1; then
+          gcloud artifacts repositories create "$service" \
+            --project "$TF_VAR_project" --location "$region" \
+            --repository-format docker
+        fi
+      - task: init

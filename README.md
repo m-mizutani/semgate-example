@@ -122,62 +122,85 @@ docker run --rm -p 8080:8080 semgate-example
 
 ## Deploying to Cloud Run
 
-`scripts/deploy.sh` builds the image from `Dockerfile` with Cloud Build
-(`gcloud run deploy --source`) and deploys it as a Cloud Run service with:
-
-- scale to zero with at most one instance for the whole service (`--min 0`,
-  `--max 1`)
-- the smallest resources Cloud Run accepts: `--cpu 0.08`, `--memory 128Mi`.
-  A CPU below 1 requires `--concurrency 1`, request-based billing
-  (`--cpu-throttling`), and the first-generation execution environment
-  (`--execution-environment gen1`), so the script sets all three
-- public access: anyone on the internet can reach the `run.app` URL without
-  authentication (`--allow-unauthenticated`)
-
-| Env | Required | Default | Meaning |
-|---|---|---|---|
-| `SEMGATE_EXAMPLE_PROJECT` | yes | — | Google Cloud project ID to deploy into |
-| `SEMGATE_EXAMPLE_REGION` | no | `asia-northeast1` | Cloud Run region |
-| `SEMGATE_EXAMPLE_SERVICE` | no | `semgate-example` | Cloud Run service name |
+The Cloud Run service is defined in `terraform/` and deployed with
+[Task](https://taskfile.dev) and [zenv](https://github.com/m-mizutani/zenv):
 
 ```sh
-SEMGATE_EXAMPLE_PROJECT=my-project ./scripts/deploy.sh
+task deploy
 ```
 
-The image is pushed to the Artifact Registry repository
-`cloud-run-source-deploy` in the same region, which Cloud Run creates on the
-first deploy.
+`task deploy` runs, in order:
+
+1. enable the Run, Cloud Build, and Artifact Registry APIs
+2. create the Terraform state bucket and the Artifact Registry repository if
+   they do not exist yet (Terraform cannot create the bucket holding its own
+   state, so this step is not part of the Terraform configuration)
+3. `terraform init` against the GCS backend
+4. `gcloud builds submit --tag`, which builds `Dockerfile` and pushes the image
+   tagged with the current commit and a timestamp
+5. `terraform apply` with that image, printing the plan for confirmation
+
+`task plan` shows the plan for the image currently recorded in the state, and
+`task destroy` removes the service. The public URL is the `service_url` output.
+
+### Environment variables
+
+zenv reads `.env.yaml` (or `.env`) from the repository root; both are
+gitignored. `TF_VAR_`-prefixed names are read by Terraform as input variables.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `TF_VAR_project` | yes | — | Google Cloud project ID to deploy into |
+| `TF_STATE_BUCKET` | yes | — | GCS bucket holding the Terraform state |
+| `TF_VAR_region` | no | `asia-northeast1` | Cloud Run region |
+| `TF_VAR_service_name` | no | `semgate-example` | Cloud Run service name |
+
+```yaml
+# .env.yaml
+TF_VAR_project: my-project
+TF_STATE_BUCKET: my-project-tfstate
+```
+
+The state bucket is created with uniform bucket-level access, public access
+prevention, and object versioning, so a broken state can be rolled back to an
+earlier generation. Sharing the deployment across machines needs nothing but
+`gcloud auth application-default login` on each of them.
+
+### What the Terraform configuration sets
+
+- scale to zero with at most one instance for the whole service (the
+  service-level `scaling` block; the `scaling` block inside `template` would
+  cap each revision, letting a rollout run two at once)
+- the smallest resources Cloud Run accepts: `cpu = "0.08"`, `memory = "128Mi"`.
+  A CPU below 1 requires `max_instance_request_concurrency = 1`, per-request
+  CPU allocation (`cpu_idle = true`), and `EXECUTION_ENVIRONMENT_GEN1`, which
+  is also required for memory below 512Mi
+- public access: `allUsers` is granted `roles/run.invoker`, so anyone on the
+  internet can reach the `run.app` URL without authentication
 
 ### One-time project setup
-
-Run these once per project before the first deploy
-(see https://docs.cloud.google.com/run/docs/deploying-source-code for details):
 
 ```sh
 PROJECT=my-project
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
 
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com --project "$PROJECT"
-
 # Cloud Build runs as the Compute Engine default service account.
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role roles/run.builder
+  --role roles/artifactregistry.writer
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role roles/logging.logWriter
 ```
 
-The account running `scripts/deploy.sh` needs `roles/run.sourceDeveloper` and
-`roles/serviceusage.serviceUsageConsumer` on the project, and
-`roles/iam.serviceAccountUser` on the Cloud Run service identity (the Compute
-Engine default service account unless configured otherwise). It also needs
-`run.services.setIamPolicy` (included in `roles/run.admin`), because
-`--allow-unauthenticated` adds an `allUsers` binding for `roles/run.invoker` to
-the service IAM policy. If that update fails (missing permission, or an
-organization policy that forbids `allUsers`), gcloud only prints a warning and
-finishes the deploy, and the service rejects unauthenticated requests with
-`403`.
-
-The deploy prints the public `Service URL` (`https://...run.app`).
+The account running `task deploy` needs, on the project: `roles/run.admin`
+(creating the service and granting `allUsers` the invoker role requires
+`run.services.setIamPolicy`), `roles/cloudbuild.builds.editor`,
+`roles/artifactregistry.admin`, `roles/storage.admin` for the state bucket,
+`roles/serviceusage.serviceUsageAdmin` to enable the APIs, and
+`roles/iam.serviceAccountUser` on the Cloud Run service identity and the build
+service account. An organization policy that forbids `allUsers` bindings makes
+`terraform apply` fail at `google_cloud_run_v2_service_iam_member`.
 
 ## Inserting the guard
 
