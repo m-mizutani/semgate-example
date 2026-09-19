@@ -5,7 +5,7 @@ test('home renders the tagline, disclaimer and endpoint links', async ({ page })
   await expect(page.getByText('Six classic injections. Zero guards. Everything lands.')).toBeVisible()
   await expect(page.getByRole('note')).toContainText('intentionally vulnerable')
   await expect(page.getByRole('note')).toContainText('logged')
-  await expect(page.getByRole('link', { name: /Ping/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Ping (Command)' })).toBeVisible()
 })
 
 test('hints page lists the injection points', async ({ page }) => {
