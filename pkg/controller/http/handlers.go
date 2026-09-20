@@ -192,9 +192,11 @@ func respond(w http.ResponseWriter, r *http.Request, endpoint string, v model.Ve
 		slog.String("rule_id", v.RuleID),
 		slog.String("detail", v.Detail),
 		slog.String("payload_location", location),
+		slog.Int("status", http.StatusOK),
+		// input names the value the verdict was made on; requestAttrs carries
+		// the whole request that value was taken from.
 		input,
-		slog.String("remote_addr", r.RemoteAddr),
-		slog.String("user_agent", r.UserAgent()),
+		requestAttrs(r),
 	)
 
 	writeJSON(w, http.StatusOK, env)

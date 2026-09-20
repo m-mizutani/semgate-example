@@ -180,6 +180,94 @@ func TestGuardFailsClosedOnEvaluationError(t *testing.T) {
 	gt.String(t, logBuf.String()).Contains(`"msg":"guard_evaluation_failed"`)
 	// The handler never ran, so no detection record was emitted.
 	gt.String(t, logBuf.String()).NotContains(`"msg":"detection"`)
+
+	request := logGroup(t, findLogRecord(t, logBuf.String(), "guard_evaluation_failed"), "request")
+	gt.Value(t, request["path"]).Equal("/api/greet")
+	gt.Array(t, logValues(t, logGroup(t, request, "query"), "name")).Equal([]string{"Alice"})
+}
+
+// TestGuardBlockedLogCarriesEvaluatedRequest pins what a blocked decision is
+// auditable from: the probability it was made on and the whole request that was
+// evaluated.
+func TestGuardBlockedLogCarriesEvaluatedRequest(t *testing.T) {
+	var logBuf bytes.Buffer
+	fake := &fakeProvider{probability: 0.97}
+	srv := newGuardedServer(t, fake, 0.8, &logBuf)
+
+	body := `{"username":"admin' OR '1'='1","password":"x"}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/login", strings.NewReader(body))
+	gt.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret-token")
+	res, err := http.DefaultClient.Do(req)
+	gt.NoError(t, err)
+	defer func() { _ = res.Body.Close() }()
+	gt.Number(t, res.StatusCode).Equal(http.StatusForbidden)
+
+	rec := findLogRecord(t, logBuf.String(), "guard_blocked")
+	gt.Value(t, rec["level"]).Equal("WARN")
+	gt.Value(t, rec["probability"]).Equal(0.97)
+	gt.Value(t, rec["threshold"]).Equal(0.8)
+
+	request := logGroup(t, rec, "request")
+	gt.Value(t, request["method"]).Equal(http.MethodPost)
+	gt.Value(t, request["path"]).Equal("/api/login")
+	gt.Value(t, request["body"]).Equal(body)
+	gt.Value(t, request["body_status"]).Equal("read")
+	gt.Array(t, logValues(t, logGroup(t, request, "headers"), "Authorization")).
+		Equal([]string{"Bearer secret-token"})
+}
+
+// TestGuardBlockedLogMatchesEvaluatedBody pins that the record shows the body
+// the decision was made on, for a body whose length is not known in advance:
+// the guard reads such a body and evaluates it, so the record must hold it too.
+func TestGuardBlockedLogMatchesEvaluatedBody(t *testing.T) {
+	var logBuf bytes.Buffer
+	fake := &fakeProvider{probability: 0.97}
+	srv := newGuardedServer(t, fake, 0.8, &logBuf)
+
+	// A reader of an unknown type makes net/http send the body chunked.
+	body := `{"username":"admin' OR '1'='1","password":"x"}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/login",
+		io.NopCloser(strings.NewReader(body)))
+	gt.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	gt.NoError(t, err)
+	defer func() { _ = res.Body.Close() }()
+	gt.Number(t, res.StatusCode).Equal(http.StatusForbidden)
+
+	_, state := fake.observed()
+	gt.String(t, state.Body).Equal(body)
+
+	request := logGroup(t, findLogRecord(t, logBuf.String(), "guard_blocked"), "request")
+	gt.Value(t, request["body"]).Equal(state.Body)
+	gt.Value(t, request["body_status"]).Equal("read")
+}
+
+// TestGuardAllowedLogCarriesEvaluatedRequest is the paired positive: the
+// allowed decision records the same data, and the body it recorded still
+// reaches the handler.
+func TestGuardAllowedLogCarriesEvaluatedRequest(t *testing.T) {
+	var logBuf bytes.Buffer
+	fake := &fakeProvider{probability: 0.02}
+	srv := newGuardedServer(t, fake, 0.8, &logBuf)
+
+	body := `{"username":"alice","password":"wrong"}`
+	res, err := http.Post(srv.URL+"/api/login", "application/json", strings.NewReader(body))
+	gt.NoError(t, err)
+	defer func() { _ = res.Body.Close() }()
+	gt.Number(t, res.StatusCode).Equal(http.StatusOK)
+	env := decodeEnvelope(t, res.Body)
+	gt.Bool(t, env.Exploited).False()
+
+	rec := findLogRecord(t, logBuf.String(), "guard_allowed")
+	gt.Value(t, rec["level"]).Equal("INFO")
+	gt.Value(t, rec["probability"]).Equal(0.02)
+
+	request := logGroup(t, rec, "request")
+	gt.Value(t, request["body"]).Equal(body)
+	gt.Value(t, request["body_status"]).Equal("read")
 }
 
 // TestGuardSendsPayloadWithoutCredentials checks what leaves the process: the

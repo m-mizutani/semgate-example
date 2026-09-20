@@ -89,6 +89,10 @@ func New(sim *usecase.Simulator, staticFS fs.FS, logger *slog.Logger, opts ...Op
 		// bounded after it, because the guard refuses an oversized body itself
 		// rather than evaluating its first kilobyte (see boundBody).
 		api.Use(boundInputs)
+		// The body is kept in the request context here, before the guard, so
+		// that both the guard's decision record and the handler's detection
+		// record show the payload they judged.
+		api.Use(captureRequest)
 		if o.guard != nil {
 			api.Use(o.guard)
 		}

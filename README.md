@@ -128,7 +128,8 @@ an attack, so an apostrophe in `O'Brien` does not block a login.
 The guard runs only when a TypeSafe API key is configured; with no key the range
 behaves exactly as it did before, and every payload lands. Two log records make
 the decision auditable: `guard_blocked` (WARN) and `guard_allowed` (INFO), both
-carrying the probability and the path.
+carrying the probability, the threshold it was compared with, and the whole
+request that was evaluated (see [Structured logging](#structured-logging)).
 
 The `Authorization`, `Proxy-Authorization`, and `Cookie` headers are excluded
 from what is sent to the TypeSafe API (`semgate.WithHeaderDenylist`). Everything
@@ -147,7 +148,8 @@ cutting them short is not a concern.
 cannot be decoded, the request is answered `503` with
 `{"error": "..."}` and is *not* forwarded: an unevaluated request must not reach
 a handler the guard is supposed to protect. The failure is logged as
-`guard_evaluation_failed` (ERROR).
+`guard_evaluation_failed` (ERROR), carrying the provider error and the same
+request data as the two decision records.
 
 ## Running
 
@@ -173,11 +175,36 @@ and the SPA.
 ## Structured logging
 
 Every request emits a structured `detection` log record (JSON by default) so you
-can inspect which attack arrived: `endpoint`, `exploited`, `category`, `rule_id`,
-`detail`, `payload_location`, the raw `input.*` values (bounded to 1KB),
-`request_id`, `remote_addr`, and `user_agent`. Fired requests log at `WARN`,
+can inspect which attack arrived: the verdict (`endpoint`, `exploited`,
+`category`, `rule_id`, `detail`, `payload_location`, `status`), the raw `input.*`
+values the verdict was made on, and `request_id`. Fired requests log at `WARN`,
 benign ones at `INFO`. A separate `access` record carries method/path/status/
 latency, correlated by `request_id`.
+
+Every record of a verdict — `detection`, `guard_blocked`, `guard_allowed` and
+`guard_evaluation_failed` — also carries a `request` group holding the whole
+request the verdict was made on, so a record can be read on its own:
+
+| Field | Content |
+|---|---|
+| `request.method`, `request.path`, `request.proto`, `request.host` | the request line |
+| `request.raw_query`, `request.query.*` | the query string as sent, and its parsed values |
+| `request.headers.*` | every header, each as a list of values |
+| `request.body`, `request.body_status` | the body, and how much of it the record holds: `read` (to its end), `none` (no body), `unread` (nothing had read it), `partial` (the rest had not arrived), `truncated` (above 1KB), `read_error` |
+| `request.content_length`, `request.remote_addr` | the declared body length and the caller |
+
+The body in a record is what the guard's evaluation and the handler actually
+read: the range never starts a read of its own for the record, because a read
+started there would wait on the client with no bound while the guard bounds its
+own. A record therefore shows the guard the bytes it judged, and the handler the
+bytes it answered with.
+
+**No header is withheld from the log**, `Authorization`, `Proxy-Authorization`
+and `Cookie` included: this range exists to be attacked, and the records are the
+material you inspect afterwards. Those three headers are still withheld from the
+TypeSafe API, so a log record is a superset of what the guard sent for
+evaluation. Do not point this range at traffic carrying credentials you care
+about.
 
 ## Development
 
