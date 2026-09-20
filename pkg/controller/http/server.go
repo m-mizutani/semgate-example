@@ -1,6 +1,6 @@
 // Package http exposes the range's six pseudo-vulnerable endpoints and serves
-// the embedded SPA. The /api routes are grouped into one subrouter so a guard
-// middleware (semgate) can later be inserted at a single seam.
+// the embedded SPA. The /api routes are grouped into one subrouter, the single
+// seam where the semgate guard middleware is inserted (see WithGuard).
 package http
 
 import (
@@ -28,6 +28,7 @@ type options struct {
 	rateLimit  int
 	rateWindow time.Duration
 	now        func() time.Time
+	guard      func(http.Handler) http.Handler
 }
 
 // WithRateLimit allows each client IP at most limit requests to /api per
@@ -37,6 +38,13 @@ func WithRateLimit(limit int, window time.Duration) Option {
 		o.rateLimit = limit
 		o.rateWindow = window
 	}
+}
+
+// WithGuard inserts guard on the /api subrouter, after the input size bound and
+// before the handlers. Without this option /api is not guarded and every attack
+// payload reaches its handler. Build the semgate guard with NewGuard.
+func WithGuard(guard func(http.Handler) http.Handler) Option {
+	return func(o *options) { o.guard = guard }
 }
 
 func withClock(now func() time.Time) Option {
@@ -69,7 +77,7 @@ func New(sim *usecase.Simulator, staticFS fs.FS, logger *slog.Logger, opts ...Op
 	r.Use(accessLogger)
 	r.Use(middleware.Recoverer)
 
-	// The API subrouter is the single seam a guard middleware would wrap. Every
+	// The API subrouter is the single seam the guard middleware wraps. Every
 	// attack-carrying request passes through here.
 	r.Route("/api", func(api chi.Router) {
 		// The rate limit applies only here, so SPA static files are never
@@ -77,10 +85,14 @@ func New(sim *usecase.Simulator, staticFS fs.FS, logger *slog.Logger, opts ...Op
 		if limiter != nil {
 			api.Use(limiter.middleware)
 		}
-		// Input size is bounded before any guard, so a guard middleware inserted
-		// after this (api.Use(guard)) only ever inspects bounded input.
+		// Query values and headers are bounded before the guard; the body is
+		// bounded after it, because the guard refuses an oversized body itself
+		// rather than evaluating its first kilobyte (see boundBody).
 		api.Use(boundInputs)
-		// A guard middleware (semgate) would be inserted here with api.Use(...).
+		if o.guard != nil {
+			api.Use(o.guard)
+		}
+		api.Use(boundBody)
 		api.Post("/login", h.login)
 		api.Get("/ping", h.ping)
 		api.Get("/files", h.files)

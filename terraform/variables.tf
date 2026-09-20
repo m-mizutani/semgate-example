@@ -19,3 +19,14 @@ variable "image" {
   description = "Container image to run, including the tag"
   type        = string
 }
+
+variable "typesafe_api_key_version" {
+  description = <<-EOT
+    Secret Manager version of the TypeSafe (Jev) API key the guarded service
+    reads as TYPESAFE_API_KEY: "latest" or a version number. Leave it unset
+    until the key has been stored with `gcloud secrets versions add`; the
+    guarded service then deploys without the variable and runs unguarded.
+  EOT
+  type        = string
+  default     = null
+}

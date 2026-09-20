@@ -1,22 +1,28 @@
 # semgate-example — Injection Range
 
 An intentionally vulnerable-looking web service, built as a test target ("range")
-for validating the [semgate](https://github.com/m-mizutani) HTTP guard
-middleware. It runs standalone: with no guard in front, attack payloads "land"
-and the service reports the exploit; once the guard is inserted as middleware,
-those same requests should be blocked before reaching the handlers.
+for validating the [semgate](https://github.com/m-mizutani/semgate) HTTP guard
+middleware. It runs both ways from the same binary: without a TypeSafe (Jev) API
+key, attack payloads "land" and the service reports the exploit; with a key, the
+semgate guard evaluates each `/api` request and answers `403` before the payload
+reaches its handler.
 
 > **This service performs no real side effects.** There is no database, no shell
-> execution, no filesystem access, and no outbound network requests. Each
-> endpoint parses/evaluates the input inside a model of the vulnerable sink to
-> decide whether an attack *would* fire, and, when it fires, returns synthetic
-> (fabricated) data. All shown data is fake — no real credentials, secrets,
-> hosts, or files. For security testing only.
+> execution, and no filesystem access. Each endpoint parses/evaluates the input
+> inside a model of the vulnerable sink to decide whether an attack *would*
+> fire, and, when it fires, returns synthetic (fabricated) data. All shown data
+> is fake — no real credentials, secrets, hosts, or files. For security testing
+> only.
+>
+> The handlers make no outbound requests. The **guard** does: when it is
+> enabled, each `/api` request's method, path, query, headers (minus the
+> credential ones), and body up to 1KB are sent to the TypeSafe API for
+> evaluation. See *The semgate guard* below.
 
 ## Endpoints
 
-All API routes are grouped under `/api` (one subrouter — the seam where a guard
-middleware is later inserted). Each returns the same JSON envelope; `exploited`
+All API routes are grouped under `/api` (one subrouter — the seam where the
+guard middleware is inserted). Each returns the same JSON envelope; `exploited`
 is the ground-truth verdict.
 
 | Method / path | Input (≤ 1KB) | Vulnerability |
@@ -42,9 +48,10 @@ Response envelope:
 }
 ```
 
-Requests are always answered with `200` (the verdict is the `exploited` flag), so
-that a later guard's `403` is a clear before/after difference. Oversized input
-returns `413`; malformed input or a missing parameter returns `400`.
+A request that reaches its handler is always answered with `200` (the verdict is
+the `exploited` flag), so the guard's `403` is a clear before/after difference.
+Oversized input returns `413`; malformed input or a missing parameter returns
+`400`; a request the guard stopped returns `403`.
 
 ### Rate limit
 
@@ -87,10 +94,61 @@ the sink:
 - **Log4Shell**: the `${...}` lookup grammar is expanded (including obfuscation);
   it fires when it resolves to a `jndi:` lookup. No lookup is performed.
 
+## The semgate guard
+
+`pkg/controller/http/guard.go` builds the [semgate](https://github.com/m-mizutani/semgate)
+middleware installed on the `/api` subrouter, after the 1KB input bound and
+before every handler. It asks [TypeSafe](https://docs.typesafe.ai/) Jev two
+questions in one API call per request:
+
+- a Noul (yes/no) question — does this request carry a web application attack
+  payload in its body, query string, or headers?
+- a Choice question — which of `sqli`, `command_injection`, `path_traversal`,
+  `ssti`, `ssrf`, `log4shell`, or `benign` is it?
+
+The Noul probability alone decides: at or above `--guard-threshold` the request
+is answered `403` and the handler never runs. The Choice answer only names the
+family in the response and the log.
+
+```json
+{
+  "blocked": true,
+  "category": "sqli",
+  "probability": 0.97,
+  "confidence": 0.88,
+  "message": "semgate blocked this request before it reached the vulnerable handler"
+}
+```
+
+The guard runs only when a TypeSafe API key is configured; with no key the range
+behaves exactly as it did before, and every payload lands. Two log records make
+the decision auditable: `guard_blocked` (WARN) and `guard_allowed` (INFO), both
+carrying the probability, category, and confidence.
+
+The `Authorization`, `Proxy-Authorization`, and `Cookie` headers are excluded
+from what is sent to the TypeSafe API (`semgate.WithHeaderDenylist`). Everything
+else — the path, the query, the remaining headers, and the body up to 1KB — is
+sent, because that is where the range's payloads travel and a guard that cannot
+see them cannot be tested.
+
+A body above 1KB is refused by the guard itself with `413`, and is never
+evaluated: `http.MaxBytesReader` stops a body mid-read rather than refusing the
+request up front, so bounding the body *before* the guard would have sent the
+first kilobyte of a refused request to the TypeSafe API. Query values and the
+`X-Log-Tag` header are still bounded before the guard (`boundInputs`), where
+cutting them short is not a concern.
+
+**Failures close the gate.** If the API call fails or returns an answer that
+cannot be decoded, the request is answered `503` with
+`{"error": "..."}` and is *not* forwarded: an unevaluated request must not reach
+a handler the guard is supposed to protect. The failure is logged as
+`guard_evaluation_failed` (ERROR).
+
 ## Running
 
 ```sh
-go run . serve --addr :8080
+go run . serve --addr :8080                       # unguarded
+TYPESAFE_API_KEY=... go run . serve --addr :8080  # guarded
 ```
 
 Flags (with matching environment variables):
@@ -101,6 +159,8 @@ Flags (with matching environment variables):
 | `--log-format` | `json` | `SEMGATE_EXAMPLE_LOG_FORMAT` (`json` \| `console`) |
 | `--log-level` | `info` | `SEMGATE_EXAMPLE_LOG_LEVEL` (`debug`\|`info`\|`warn`\|`error`) |
 | `--rate-limit` | `15` | `SEMGATE_EXAMPLE_RATE_LIMIT` (`/api` requests per client IP per minute; `0` disables) |
+| `--typesafe-api-key` | — | `TYPESAFE_API_KEY` (the guard runs only when this is set; the name follows the semgate examples rather than the `SEMGATE_EXAMPLE_` prefix) |
+| `--guard-threshold` | `0.8` | `SEMGATE_EXAMPLE_GUARD_THRESHOLD` (attack probability at which a request is blocked; `0 < t <= 1`) |
 
 The frontend is embedded in the binary, so the single process serves both the API
 and the SPA.
@@ -142,8 +202,21 @@ docker run --rm -p 8080:8080 semgate-example
 
 ## Deploying to Cloud Run
 
-The Cloud Run service is defined in `terraform/` and deployed with
-[Task](https://taskfile.dev) and [zenv](https://github.com/m-mizutani/zenv):
+Two Cloud Run services are defined in `terraform/`, running the same image with
+the same resources and both open to `allUsers`:
+
+| Service | Identity | `TYPESAFE_API_KEY` | Behavior |
+|---|---|---|---|
+| `${service}` | `${service}@…` | from Secret Manager | guarded once the key is wired in |
+| `${service}-noguard` | `${service}-noguard@…` | never set | every payload lands |
+
+The no-guard service is not merely configured without the key: it runs as its
+own service account, which is not granted `roles/secretmanager.secretAccessor`
+on the secret, so it cannot read the key at all. The pair is the before/after
+comparison the guard is measured against.
+
+They are deployed with [Task](https://taskfile.dev) and
+[zenv](https://github.com/m-mizutani/zenv):
 
 ```sh
 task deploy
@@ -151,7 +224,7 @@ task deploy
 
 `task deploy` runs, in order:
 
-1. enable the Run, Cloud Build, and Artifact Registry APIs
+1. enable the Run, Cloud Build, Artifact Registry, and Secret Manager APIs
 2. create the Terraform state bucket and the Artifact Registry repository if
    they do not exist yet (Terraform cannot create the bucket holding its own
    state, so this step is not part of the Terraform configuration)
@@ -161,7 +234,35 @@ task deploy
 5. `terraform apply` with that image, printing the plan for confirmation
 
 `task plan` shows the plan for the image currently recorded in the state, and
-`task destroy` removes the service. The public URL is the `service_url` output.
+`task destroy` removes both services. The public URLs are the `service_url` and
+`noguard_service_url` outputs.
+
+### Storing the TypeSafe API key
+
+Terraform creates the Secret Manager secret but never a secret version, so the
+API key never enters the Terraform state (which lives in a GCS bucket). Enabling
+the guard therefore takes two deployments:
+
+```sh
+# 1. First deploy. SEMGATE_EXAMPLE_KEY_VERSION is unset, so the guarded service
+#    is deployed without TYPESAFE_API_KEY and runs unguarded. This also creates
+#    the secret and the IAM binding.
+task deploy
+
+# 2. Store the key in the secret Terraform created.
+printf '%s' "$YOUR_TYPESAFE_API_KEY" | \
+  gcloud secrets versions add "$(terraform -chdir=terraform output -raw typesafe_api_key_secret)" \
+    --project "$SEMGATE_EXAMPLE_PROJECT" --data-file=-
+
+# 3. Set SEMGATE_EXAMPLE_KEY_VERSION=latest in .env.yaml and deploy again. The
+#    service now receives TYPESAFE_API_KEY and the guard runs.
+task deploy
+```
+
+The `guard_enabled` output reports whether the deployed configuration wires the
+key in. Rotating the key means adding a new secret version and redeploying (or
+restarting the service): `latest` is resolved when an instance starts, not on
+every request.
 
 ### Environment variables
 
@@ -174,12 +275,17 @@ uses, and `Taskfile.yml` passes them to Terraform as input variables.
 | `SEMGATE_EXAMPLE_PROJECT` | yes | — | Google Cloud project ID to deploy into |
 | `SEMGATE_EXAMPLE_STATE_BUCKET` | yes | — | GCS bucket holding the Terraform state |
 | `SEMGATE_EXAMPLE_REGION` | no | `asia-northeast1` | Cloud Run region |
-| `SEMGATE_EXAMPLE_SERVICE` | no | `semgate-example` | Cloud Run service name |
+| `SEMGATE_EXAMPLE_SERVICE` | no | `semgate-example` | Cloud Run service name (the unguarded one appends `-noguard`) |
+| `SEMGATE_EXAMPLE_KEY_VERSION` | no | unset | Secret Manager version of the TypeSafe API key the guarded service reads (`latest` or a number). While unset, the guarded service is deployed without the key |
+
+The API key itself is never one of these: it goes into Secret Manager directly
+(see *Storing the TypeSafe API key* above).
 
 ```yaml
 # .env.yaml
 SEMGATE_EXAMPLE_PROJECT: my-project
 SEMGATE_EXAMPLE_STATE_BUCKET: my-project-tfstate
+SEMGATE_EXAMPLE_KEY_VERSION: latest
 ```
 
 The state bucket is created with uniform bucket-level access, public access
@@ -188,6 +294,8 @@ earlier generation. Sharing the deployment across machines needs nothing but
 `gcloud auth application-default login` on each of them.
 
 ### What the Terraform configuration sets
+
+For each of the two services:
 
 - scale to zero with at most one instance for the whole service (the
   service-level `scaling` block; the `scaling` block inside `template` would
@@ -198,6 +306,15 @@ earlier generation. Sharing the deployment across machines needs nothing but
   is also required for memory below 512Mi
 - public access: `allUsers` is granted `roles/run.invoker`, so anyone on the
   internet can reach the `run.app` URL without authentication
+- a dedicated service account, so neither range runs as the Compute Engine
+  default account
+
+and, for the guarded service only:
+
+- a Secret Manager secret holding the TypeSafe API key, with
+  `roles/secretmanager.secretAccessor` granted on it to that service's account
+- `TYPESAFE_API_KEY` sourced from that secret, present only while
+  `typesafe_api_key_version` is set
 
 ### One-time project setup
 
@@ -218,14 +335,10 @@ The account running `task deploy` needs, on the project: `roles/run.admin`
 (creating the service and granting `allUsers` the invoker role requires
 `run.services.setIamPolicy`), `roles/cloudbuild.builds.editor`,
 `roles/artifactregistry.admin`, `roles/storage.admin` for the state bucket,
-`roles/serviceusage.serviceUsageAdmin` to enable the APIs, and
-`roles/iam.serviceAccountUser` on the Cloud Run service identity and the build
-service account. An organization policy that forbids `allUsers` bindings makes
-`terraform apply` fail at `google_cloud_run_v2_service_iam_member`.
-
-## Inserting the guard
-
-The `/api` subrouter in `pkg/controller/http/server.go` is the single seam: a
-guard middleware is added there with `api.Use(...)`. The input-size bound (1KB)
-is applied at this boundary, since a guard cannot inspect a large body
-effectively. Building the guard itself is out of scope for this repository.
+`roles/serviceusage.serviceUsageAdmin` to enable the APIs,
+`roles/iam.serviceAccountAdmin` to create the two range service accounts,
+`roles/secretmanager.admin` to create the secret, grant access on it, and add
+key versions, and `roles/iam.serviceAccountUser` on the Cloud Run service
+identities and the build service account. An organization policy that forbids
+`allUsers` bindings makes `terraform apply` fail at
+`google_cloud_run_v2_service_iam_member`.

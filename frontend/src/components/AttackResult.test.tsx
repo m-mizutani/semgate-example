@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
 import AttackResult from './AttackResult'
-import { RequestError, type Envelope } from '../api/client'
+import { BlockedError, RequestError, type Envelope } from '../api/client'
 
 const firedEnvelope: Envelope = {
   endpoint: 'login',
@@ -45,6 +45,30 @@ describe('AttackResult', () => {
     render(<AttackResult envelope={null} error={new RequestError(429, 'Too many requests')} />)
     expect(screen.getByRole('alert')).toHaveTextContent('429')
     expect(screen.getByRole('alert')).toHaveClass('warn')
+  })
+
+  it('shows a blocked banner, not a rejection, when the guard stops the request', () => {
+    render(
+      <AttackResult
+        envelope={null}
+        error={
+          new BlockedError({
+            blocked: true,
+            category: 'sqli',
+            probability: 0.972,
+            confidence: 0.884,
+            message: 'semgate blocked this request',
+          })
+        }
+      />,
+    )
+    const banner = screen.getByRole('alert')
+    expect(banner).toHaveTextContent('Blocked by semgate')
+    expect(banner).toHaveTextContent('sqli')
+    expect(banner).toHaveClass('blocked')
+    expect(banner).not.toHaveTextContent('Request rejected')
+    expect(banner).toHaveTextContent('97.2%')
+    expect(banner).toHaveTextContent('88.4%')
   })
 
   it('renders nothing before the first submit', () => {

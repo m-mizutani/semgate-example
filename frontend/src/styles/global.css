@@ -12,6 +12,8 @@
   --ok-bg: #56c98a1a;
   --warn: #e2b23c;
   --warn-bg: #e2b23c1f;
+  --block: #6aa6ff;
+  --block-bg: #6aa6ff1f;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: dark;
@@ -94,7 +96,11 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 0.06rem 
 .banner.exploit { background: var(--exploit-bg); border: 1px solid var(--exploit); color: var(--exploit); }
 .banner.ok { background: var(--ok-bg); border: 1px solid var(--ok); color: var(--ok); }
 .banner.warn { background: var(--warn-bg); border: 1px solid var(--warn); color: var(--warn); }
+/* The guard stopped the request: a separate colour from exploit (it landed),
+   ok (it was benign) and warn (the range refused the input). */
+.banner.blocked { background: var(--block-bg); border: 1px solid var(--block); color: var(--block); }
 .banner .sub { display: block; font-weight: 400; color: var(--ink); font-size: 0.85rem; margin-top: 0.25rem; }
+.banner .tag { margin: 0.35rem 0 0; font-weight: 400; }
 
 .tag { display: inline-block; font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
 
