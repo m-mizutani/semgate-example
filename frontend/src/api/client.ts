@@ -23,9 +23,7 @@ export class RequestError extends Error {
 // request to the vulnerable handler.
 interface BlockBody {
   blocked: boolean
-  category: string
   probability: number
-  confidence: number
   message: string
 }
 
@@ -33,14 +31,10 @@ interface BlockBody {
 // the guard judged the request to be an attack and stopped it. Callers tell it
 // apart with `err instanceof BlockedError`, not by the status code.
 export class BlockedError extends RequestError {
-  readonly category: string
   readonly probability: number
-  readonly confidence: number
   constructor(body: BlockBody) {
     super(403, body.message)
-    this.category = body.category
     this.probability = body.probability
-    this.confidence = body.confidence
   }
 }
 
@@ -54,9 +48,7 @@ async function parse(res: Response): Promise<Envelope> {
     if (body.blocked) {
       throw new BlockedError({
         blocked: true,
-        category: body.category ?? 'unknown',
         probability: body.probability ?? 0,
-        confidence: body.confidence ?? 0,
         message: body.message ?? 'semgate blocked this request before it reached the handler.',
       })
     }

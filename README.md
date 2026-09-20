@@ -97,25 +97,30 @@ the sink:
 ## The semgate guard
 
 `pkg/controller/http/guard.go` builds the [semgate](https://github.com/m-mizutani/semgate)
-middleware installed on the `/api` subrouter, after the 1KB input bound and
-before every handler. It asks [TypeSafe](https://docs.typesafe.ai/) Jev two
-questions in one API call per request:
+middleware installed on the `/api` subrouter, before every handler. The whole
+guard is one function, `NewGuard`, written out in one piece so that its body
+reads as a worked example of using semgate: the provider options, the question,
+and the decision made from the answer.
 
-- a Noul (yes/no) question — does this request carry a web application attack
-  payload in its body, query string, or headers?
-- a Choice question — which of `sqli`, `command_injection`, `path_traversal`,
-  `ssti`, `ssrf`, `log4shell`, or `benign` is it?
+It asks [TypeSafe](https://docs.typesafe.ai/) Jev a single Noul (yes/no)
+question per request — *does this request carry an attack payload?* — and
+compares the returned probability with `--guard-threshold`. At or above the
+threshold the request is answered `403` and the handler never runs.
 
-The Noul probability alone decides: at or above `--guard-threshold` the request
-is answered `403` and the handler never runs. The Choice answer only names the
-family in the response and the log.
+The question text is the interesting part. It names the techniques to look for
+(quote breakouts and `UNION SELECT`, shell separators and `$(...)`, `../`
+sequences, `{{7*7}}`-style template expressions, loopback and metadata
+addresses, `${jndi:...}` lookups, `<script>` and `javascript:`, CR/LF in a
+header value) and then tells the model to judge the *decoded* meaning, because
+payloads arrive percent-encoded, double-encoded, as HTML entities or Unicode
+escapes, base64-ed, case-mangled (`SeLeCt`, `JnDi`), split by inline comments
+(`UNION/**/SELECT`), or truncated with a null byte. It also says what is *not*
+an attack, so an apostrophe in `O'Brien` does not block a login.
 
 ```json
 {
   "blocked": true,
-  "category": "sqli",
   "probability": 0.97,
-  "confidence": 0.88,
   "message": "semgate blocked this request before it reached the vulnerable handler"
 }
 ```
@@ -123,7 +128,7 @@ family in the response and the log.
 The guard runs only when a TypeSafe API key is configured; with no key the range
 behaves exactly as it did before, and every payload lands. Two log records make
 the decision auditable: `guard_blocked` (WARN) and `guard_allowed` (INFO), both
-carrying the probability, category, and confidence.
+carrying the probability and the path.
 
 The `Authorization`, `Proxy-Authorization`, and `Cookie` headers are excluded
 from what is sent to the TypeSafe API (`semgate.WithHeaderDenylist`). Everything

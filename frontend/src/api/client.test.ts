@@ -31,9 +31,7 @@ describe('client guard handling', () => {
       new Response(
         JSON.stringify({
           blocked: true,
-          category: 'ssti',
           probability: 0.93,
-          confidence: 0.81,
           message: 'semgate blocked this request before it reached the vulnerable handler',
         }),
         { status: 403 },
@@ -43,9 +41,10 @@ describe('client guard handling', () => {
     expect(err).toBeInstanceOf(BlockedError)
     const blocked = err as BlockedError
     expect(blocked.status).toBe(403)
-    expect(blocked.category).toBe('ssti')
     expect(blocked.probability).toBe(0.93)
-    expect(blocked.confidence).toBe(0.81)
+    expect(blocked.message).toBe(
+      'semgate blocked this request before it reached the vulnerable handler',
+    )
   })
 
   it('reports a 403 that is not a guard block as a plain RequestError', async () => {
