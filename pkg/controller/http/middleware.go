@@ -13,14 +13,12 @@ import (
 // large body effectively, so the range refuses anything above this.
 const maxInputBytes = 1024
 
-// boundInputs enforces the 1KB limit on the body, every query value, and the
-// X-Log-Tag header. It is registered on the /api subrouter before any guard
-// middleware inserted at that seam — the guard then only ever sees bounded
-// input.
+// boundInputs enforces the 1KB limit on every query value and on the X-Log-Tag
+// header. It runs before the guard, so the guard only ever sees bounded values
+// there. The body is bounded separately by boundBody, which runs after the
+// guard.
 func boundInputs(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxInputBytes)
-
 		for key, values := range r.URL.Query() {
 			for _, v := range values {
 				if len(v) > maxInputBytes {
@@ -35,6 +33,19 @@ func boundInputs(next http.Handler) http.Handler {
 			return
 		}
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+// boundBody caps the request body at maxInputBytes for the handlers. It runs
+// after the guard rather than before it: http.MaxBytesReader stops the body
+// mid-read instead of refusing the request up front, so a guard behind it would
+// evaluate — and send to its provider — the first 1KB of a body the range means
+// to refuse. With the guard installed, the guard refuses an oversized body
+// itself (413) and this bound never fires.
+func boundBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxInputBytes)
 		next.ServeHTTP(w, r)
 	})
 }

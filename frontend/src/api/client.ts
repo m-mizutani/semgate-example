@@ -19,7 +19,45 @@ export class RequestError extends Error {
   }
 }
 
+// blockBody is the 403 body the semgate guard writes instead of forwarding the
+// request to the vulnerable handler.
+interface BlockBody {
+  blocked: boolean
+  probability: number
+  message: string
+}
+
+// BlockedError marks the one failure that is not the range refusing bad input:
+// the guard judged the request to be an attack and stopped it. Callers tell it
+// apart with `err instanceof BlockedError`, not by the status code.
+export class BlockedError extends RequestError {
+  readonly probability: number
+  constructor(body: BlockBody) {
+    super(403, body.message)
+    this.probability = body.probability
+  }
+}
+
+async function readJSON<T>(res: Response): Promise<Partial<T>> {
+  return (await res.json().catch(() => ({}))) as Partial<T>
+}
+
 async function parse(res: Response): Promise<Envelope> {
+  if (res.status === 403) {
+    const body = await readJSON<BlockBody>(res)
+    if (body.blocked) {
+      throw new BlockedError({
+        blocked: true,
+        probability: body.probability ?? 0,
+        message: body.message ?? 'semgate blocked this request before it reached the handler.',
+      })
+    }
+    throw new RequestError(403, body.message ?? 'Forbidden.')
+  }
+  if (res.status === 503) {
+    const body = await readJSON<{ error: string }>(res)
+    throw new RequestError(503, body.error ?? 'The guard could not evaluate this request.')
+  }
   if (res.status === 413) {
     throw new RequestError(413, 'Input is too large (the range accepts at most 1KB).')
   }
@@ -33,7 +71,7 @@ async function parse(res: Response): Promise<Envelope> {
     )
   }
   if (res.status === 400) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    const body = await readJSON<{ error: string }>(res)
     throw new RequestError(400, body.error ?? 'Bad request.')
   }
   if (!res.ok) {

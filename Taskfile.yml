@@ -6,6 +6,9 @@ version: "3"
 #   SEMGATE_EXAMPLE_STATE_BUCKET  GCS bucket holding the Terraform state (required)
 #   SEMGATE_EXAMPLE_REGION        Cloud Run region (optional, default asia-northeast1)
 #   SEMGATE_EXAMPLE_SERVICE       Cloud Run service name (optional, default semgate-example)
+#   SEMGATE_EXAMPLE_KEY_VERSION   Secret Manager version of the TypeSafe API key the
+#                                 guarded service reads ("latest" or a number). Unset
+#                                 until the key is stored; the range then runs unguarded.
 
 tasks:
   deploy:
@@ -35,11 +38,17 @@ tasks:
         service="${SEMGATE_EXAMPLE_SERVICE:-semgate-example}"
         image="${region}-docker.pkg.dev/${SEMGATE_EXAMPLE_PROJECT}/${service}/${service}:$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
         gcloud builds submit . --project "$SEMGATE_EXAMPLE_PROJECT" --tag "$image"
-        terraform -chdir=terraform apply \
+        set -- \
           -var "project=$SEMGATE_EXAMPLE_PROJECT" \
           -var "region=$region" \
           -var "service_name=$service" \
           -var "image=$image"
+        # Passing no variable leaves it null, which deploys the range without
+        # the API key. An empty string would be a version named "".
+        if [ -n "${SEMGATE_EXAMPLE_KEY_VERSION:-}" ]; then
+          set -- "$@" -var "typesafe_api_key_version=$SEMGATE_EXAMPLE_KEY_VERSION"
+        fi
+        terraform -chdir=terraform apply "$@"
 
   plan:run:
     deps: [check-env]
@@ -54,11 +63,15 @@ tasks:
           echo "no image recorded in the state yet; run 'task deploy' first" >&2
           exit 1
         fi
-        terraform -chdir=terraform plan \
+        set -- \
           -var "project=$SEMGATE_EXAMPLE_PROJECT" \
           -var "region=$region" \
           -var "service_name=$service" \
           -var "image=$image"
+        if [ -n "${SEMGATE_EXAMPLE_KEY_VERSION:-}" ]; then
+          set -- "$@" -var "typesafe_api_key_version=$SEMGATE_EXAMPLE_KEY_VERSION"
+        fi
+        terraform -chdir=terraform plan "$@"
 
   destroy:run:
     deps: [check-env]
@@ -95,7 +108,7 @@ tasks:
   bootstrap:
     internal: true
     cmds:
-      - gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project "$SEMGATE_EXAMPLE_PROJECT"
+      - gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com --project "$SEMGATE_EXAMPLE_PROJECT"
       - |
         set -eu
         region="${SEMGATE_EXAMPLE_REGION:-asia-northeast1}"

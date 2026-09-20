@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { greet, RequestError } from './client'
+import { BlockedError, greet, RequestError } from './client'
 
 function stubFetch(res: Response) {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(res))
@@ -22,5 +22,45 @@ describe('client rate limit handling', () => {
     stubFetch(new Response('{"error":"rate limit exceeded"}', { status: 429 }))
     const err = await greet('Alice').catch((e: unknown) => e)
     expect((err as RequestError).message).toBe('Too many requests. Try again later.')
+  })
+})
+
+describe('client guard handling', () => {
+  it('reports a guard block as BlockedError with its verdict', async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          blocked: true,
+          probability: 0.93,
+          message: 'semgate blocked this request before it reached the vulnerable handler',
+        }),
+        { status: 403 },
+      ),
+    )
+    const err = await greet('{{7*7}}').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(BlockedError)
+    const blocked = err as BlockedError
+    expect(blocked.status).toBe(403)
+    expect(blocked.probability).toBe(0.93)
+    expect(blocked.message).toBe(
+      'semgate blocked this request before it reached the vulnerable handler',
+    )
+  })
+
+  it('reports a 403 that is not a guard block as a plain RequestError', async () => {
+    stubFetch(new Response('{"error":"forbidden"}', { status: 403 }))
+    const err = await greet('Alice').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RequestError)
+    expect(err).not.toBeInstanceOf(BlockedError)
+  })
+
+  it('reports an unavailable guard on 503', async () => {
+    stubFetch(
+      new Response('{"error":"the guard could not evaluate this request"}', { status: 503 }),
+    )
+    const err = await greet('Alice').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RequestError)
+    expect((err as RequestError).status).toBe(503)
+    expect((err as RequestError).message).toBe('the guard could not evaluate this request')
   })
 })

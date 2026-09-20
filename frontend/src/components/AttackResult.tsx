@@ -1,17 +1,36 @@
-import type { Envelope, RequestError } from '../api/client'
+import { BlockedError, type Envelope, type RequestError } from '../api/client'
 
 interface Props {
   envelope: Envelope | null
   error: RequestError | null
 }
 
-// AttackResult renders the four outcome states: fired, benign, input error, and
-// nothing yet.
+// percent formats a 0..1 probability for the block banner.
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`
+}
+
+// AttackResult renders the five outcome states: blocked by the guard, fired,
+// benign, request rejected, and nothing yet.
 export default function AttackResult({ envelope, error }: Props) {
-  if (error) {
-    const cls = error.status === 413 || error.status === 400 || error.status === 429 ? 'warn' : 'ok'
+  // A blocked request is not a failed one: the guard stopped it on purpose, so
+  // it gets its own banner rather than the generic rejection banner.
+  if (error instanceof BlockedError) {
     return (
-      <div className={`banner ${cls}`} role="alert">
+      <div className="banner blocked" role="alert">
+        🛡 Blocked by semgate
+        <span className="sub">
+          The guard judged this request to be an attack and answered 403. The vulnerable
+          handler never ran, so the payload was never fed to the sink it targets.
+        </span>
+        <p className="tag">Attack probability: {percent(error.probability)}</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="banner warn" role="alert">
         Request rejected ({error.status})
         <span className="sub">{error.message}</span>
       </div>

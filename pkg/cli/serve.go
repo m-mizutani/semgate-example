@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/m-mizutani/goerr/v2"
+	"github.com/m-mizutani/semgate/providers/typesafe"
+
 	"github.com/m-mizutani/semgate-example/frontend"
 	httpctrl "github.com/m-mizutani/semgate-example/pkg/controller/http"
 	"github.com/m-mizutani/semgate-example/pkg/usecase"
@@ -18,8 +20,9 @@ import (
 )
 
 func cmdServe() *cli.Command {
-	var addr, logFormat, logLevel string
+	var addr, logFormat, logLevel, apiKey string
 	var rateLimit int
+	var guardThreshold float64
 	return &cli.Command{
 		Name:  "serve",
 		Usage: "Run the injection range HTTP server",
@@ -52,6 +55,20 @@ func cmdServe() *cli.Command {
 				Sources:     cli.EnvVars("SEMGATE_EXAMPLE_RATE_LIMIT"),
 				Destination: &rateLimit,
 			},
+			&cli.StringFlag{
+				Name: "typesafe-api-key",
+				Usage: "TypeSafe (Jev) API key. The semgate guard runs only when this is set; " +
+					"without it the range answers every attack unguarded",
+				Sources:     cli.EnvVars("TYPESAFE_API_KEY"),
+				Destination: &apiKey,
+			},
+			&cli.FloatFlag{
+				Name:        "guard-threshold",
+				Usage:       "block an /api request when the attack probability reaches this value (0 < t <= 1)",
+				Value:       0.8,
+				Sources:     cli.EnvVars("SEMGATE_EXAMPLE_GUARD_THRESHOLD"),
+				Destination: &guardThreshold,
+			},
 		},
 		Action: func(ctx context.Context, _ *cli.Command) error {
 			logger := logging.New(os.Stdout, logging.ParseFormat(logFormat), logging.ParseLevel(logLevel))
@@ -70,6 +87,21 @@ func cmdServe() *cli.Command {
 			var opts []httpctrl.Option
 			if rateLimit != 0 {
 				opts = append(opts, httpctrl.WithRateLimit(rateLimit, time.Minute))
+			}
+
+			if apiKey != "" {
+				client, err := typesafe.New(apiKey)
+				if err != nil {
+					return goerr.Wrap(err, "init TypeSafe client")
+				}
+				guard, err := httpctrl.NewGuard(client, guardThreshold)
+				if err != nil {
+					return goerr.Wrap(err, "build semgate guard")
+				}
+				opts = append(opts, httpctrl.WithGuard(guard))
+				logger.Info("semgate guard enabled", "guard_threshold", guardThreshold)
+			} else {
+				logger.Warn("semgate guard disabled: no TypeSafe API key configured")
 			}
 
 			handler, err := httpctrl.New(sim, staticFS, logger, opts...)
