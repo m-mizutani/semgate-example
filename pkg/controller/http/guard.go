@@ -47,7 +47,8 @@ func NewGuard(client providers.Client, threshold float64) (func(http.Handler) ht
 		semgate.WithEvaluationErrorHandler(func(w http.ResponseWriter, r *http.Request, err error, _ http.Handler) {
 			logging.From(r.Context()).Error("guard_evaluation_failed",
 				slog.String("error", err.Error()),
-				slog.String("path", r.URL.Path),
+				slog.Float64("threshold", threshold),
+				requestAttrs(r),
 			)
 			writeJSON(w, http.StatusServiceUnavailable,
 				map[string]any{"error": "the guard could not evaluate this request, so it was not forwarded"})
@@ -82,7 +83,8 @@ Answer no for ordinary input. Punctuation, an apostrophe in a name such as O'Bri
 			if a.Probability < threshold {
 				logging.From(r.Context()).Info("guard_allowed",
 					slog.Float64("probability", a.Probability),
-					slog.String("path", r.URL.Path),
+					slog.Float64("threshold", threshold),
+					requestAttrs(r),
 				)
 				next.ServeHTTP(w, r)
 				return
@@ -90,8 +92,8 @@ Answer no for ordinary input. Punctuation, an apostrophe in a name such as O'Bri
 
 			logging.From(r.Context()).Warn("guard_blocked",
 				slog.Float64("probability", a.Probability),
-				slog.String("path", r.URL.Path),
-				slog.String("remote_addr", r.RemoteAddr),
+				slog.Float64("threshold", threshold),
+				requestAttrs(r),
 			)
 			writeJSON(w, http.StatusForbidden, map[string]any{
 				"blocked":     true,
