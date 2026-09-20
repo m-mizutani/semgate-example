@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 test('home renders the tagline, disclaimer and endpoint links', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByText('Six classic injections. Zero guards. Everything lands.')).toBeVisible()
+  await expect(page.getByText('Six classic injections. One target you are allowed to attack.')).toBeVisible()
   await expect(page.getByRole('note')).toContainText('intentionally vulnerable')
   await expect(page.getByRole('note')).toContainText('logged')
   await expect(page.getByRole('link', { name: 'Ping (Command)' })).toBeVisible()

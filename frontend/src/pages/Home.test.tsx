@@ -10,7 +10,7 @@ describe('Home', () => {
         <Home />
       </MemoryRouter>,
     )
-    expect(screen.getByText(/Everything lands/)).toBeInTheDocument()
+    expect(screen.getByText(/One target you are allowed to attack/)).toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent('intentionally vulnerable')
     expect(screen.getByRole('note')).toHaveTextContent('logged')
   })
